@@ -1,0 +1,12 @@
+{
+    "name": "wsadmin/oop",
+    "authors": [
+        {
+            "name": "Audyari Wiyono",
+            "email": "audy123ari@gmail.com"
+        }
+    ],
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    }
+}
