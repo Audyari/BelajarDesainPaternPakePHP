@@ -11,7 +11,6 @@ class DatabaseManagerTest extends TestCase
         // Reset singleton instance before each test
         $reflection = new ReflectionClass(DatabaseManager::class);
         $instance = $reflection->getProperty('instance');
-        $instance->setAccessible(true);
         $instance->setValue(null, null);
     }
 
