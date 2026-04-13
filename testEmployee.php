@@ -28,6 +28,10 @@ class Employee
     public function __construct(?string $title = null)
     {
         if ($title !== null) {
+            if (!isset(self::SALARY_MAP[$title])) {
+                throw new InvalidArgumentException("Title '$title' tidak valid! Pilih: " . implode(', ', array_keys(self::SALARY_MAP)));
+            }
+            
             $this->id = self::$counter++;
             $this->title = $title;
             $this->salary = self::SALARY_MAP[$title];
@@ -45,13 +49,11 @@ class Employee
     public function promote(string $newTitle): void
     {
         if (!isset(self::SALARY_MAP[$newTitle])) {
-            echo "❌ Title '$newTitle' tidak valid!\n";
             return;
         }
 
         $this->title = $newTitle;
         $this->salary = self::SALARY_MAP[$newTitle];
-        echo "✅ {$this->name} dipromosikan ke $newTitle\n";
     }
 
     // Tampilkan info employee
@@ -87,9 +89,14 @@ class EmployeePrototypeFactory
     // Clone dari prototype, tinggal isi nama
     public function create(string $title, string $name): ?Employee
     {
+        // Validasi title
         if (!isset($this->prototypes[$title])) {
-            echo "❌ Title '$title' tidak valid!\n";
             return null;
+        }
+
+        // Validasi nama tidak boleh kosong
+        if (trim($name) === '') {
+            throw new InvalidArgumentException("Nama employee tidak boleh kosong!");
         }
 
         // Clone dari prototype
@@ -97,6 +104,80 @@ class EmployeePrototypeFactory
         $employee->name = $name;  // Cuma ini yang perlu diganti
 
         return $employee;
+    }
+}
+
+// ============================================
+// EMPLOYEE STORAGE (File-based with locking)
+// Untuk simpan data employee ke file
+// ============================================
+class EmployeeStorage
+{
+    private string $storageDir;
+
+    public function __construct(?string $storageDir = null)
+    {
+        $this->storageDir = $storageDir ?? sys_get_temp_dir() . '/employee_storage';
+        if (!is_dir($this->storageDir)) {
+            mkdir($this->storageDir, 0777, true);
+        }
+    }
+
+    public function save(Employee $employee): void
+    {
+        $file = $this->getFilePath($employee->id);
+        $data = json_encode([
+            'id' => $employee->id,
+            'name' => $employee->name,
+            'title' => $employee->title,
+            'salary' => $employee->salary,
+            'joinDate' => $employee->joinDate,
+        ], JSON_PRETTY_PRINT);
+
+        file_put_contents($file, $data, LOCK_EX);
+    }
+
+    public function getById(int $id): ?array
+    {
+        $file = $this->getFilePath($id);
+        if (!file_exists($file)) {
+            return null;
+        }
+
+        $content = file_get_contents($file);
+        return json_decode($content, true);
+    }
+
+    public function getAll(): array
+    {
+        $employees = [];
+        $files = glob($this->storageDir . '/*.json');
+
+        foreach ($files as $file) {
+            $content = file_get_contents($file);
+            $employees[] = json_decode($content, true);
+        }
+
+        return $employees;
+    }
+
+    public function getTotalSalary(): int
+    {
+        $employees = $this->getAll();
+        return array_reduce($employees, fn($sum, $emp) => $sum + $emp['salary'], 0);
+    }
+
+    public function clear(): void
+    {
+        $files = glob($this->storageDir . '/*.json');
+        foreach ($files as $file) {
+            unlink($file);
+        }
+    }
+
+    private function getFilePath(int $id): string
+    {
+        return $this->storageDir . "/employee_$id.json";
     }
 }
 
