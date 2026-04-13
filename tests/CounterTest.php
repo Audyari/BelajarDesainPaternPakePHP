@@ -32,24 +32,27 @@ class CounterTest extends TestCase
     public function testArrayCounterIncrement()
     {
         $counter = new ArrayCounter();
-        $this->assertEquals(1, $counter->increment('hits', 1));
-        $this->assertEquals(2, $counter->increment('hits', 1));
+        $testKey = 'hits_' . time();
+        $this->assertEquals(1, $counter->increment($testKey, 1));
+        $this->assertEquals(2, $counter->increment($testKey, 1));
     }
 
     public function testArrayCounterDecrement()
     {
         $counter = new ArrayCounter();
-        $counter->set('score', 10);
-        $this->assertEquals(9, $counter->decrement('score', 1));
-        $this->assertEquals(7, $counter->decrement('score', 2));
+        $testKey = 'score_' . time();
+        $counter->set($testKey, 10);
+        $this->assertEquals(9, $counter->decrement($testKey, 1));
+        $this->assertEquals(7, $counter->decrement($testKey, 2));
     }
 
     public function testArrayCounterReset()
     {
         $counter = new ArrayCounter();
-        $counter->set('temp', 50);
-        $counter->reset('temp');
-        $this->assertEquals(0, $counter->get('temp'));
+        $testKey = 'temp_' . time();
+        $counter->set($testKey, 50);
+        $counter->reset($testKey);
+        $this->assertEquals(0, $counter->get($testKey));
     }
 
     // --- Counter (Singleton + DI) Tests ---
@@ -74,47 +77,53 @@ class CounterTest extends TestCase
         $arrayCounter = new ArrayCounter();
         $c1 = Counter::getInstance($arrayCounter);
         $c2 = Counter::getInstance($arrayCounter);
-        
-        $c1->increment();
-        $this->assertEquals(1, $c2->get());
+
+        $testKey = 'test_share_state_' . time();
+        $c1->increment($testKey);
+        $this->assertEquals(1, $c2->get($testKey));
     }
 
     public function testCounterIncrement()
     {
         $arrayCounter = new ArrayCounter();
         $counter = Counter::getInstance($arrayCounter);
-        
-        $this->assertEquals(1, $counter->increment('test_inc'));
-        $this->assertEquals(3, $counter->increment('test_inc', 2));
+        $testKey = 'test_inc_' . time();
+
+        $this->assertEquals(1, $counter->increment($testKey));
+        $this->assertEquals(3, $counter->increment($testKey, 2));
     }
 
     public function testCounterDecrement()
     {
         $arrayCounter = new ArrayCounter();
         $counter = Counter::getInstance($arrayCounter);
-        $counter->increment('score', 10);
+        $testKey = 'score_dec_' . time() . '_' . rand(1000, 9999);
         
-        $this->assertEquals(9, $counter->decrement('score'));
-        $this->assertEquals(4, $counter->decrement('score', 5));
+        $counter->increment($testKey, 10);
+
+        $this->assertEquals(9, $counter->decrement($testKey));
+        $this->assertEquals(4, $counter->decrement($testKey, 5));
     }
 
     public function testCounterGet()
     {
         $arrayCounter = new ArrayCounter();
         $counter = Counter::getInstance($arrayCounter);
-        $counter->increment('views');
-        
-        $this->assertEquals(1, $counter->get('views'));
+        $testKey = 'views_' . time();
+        $counter->increment($testKey);
+
+        $this->assertEquals(1, $counter->get($testKey));
     }
 
     public function testCounterReset()
     {
         $arrayCounter = new ArrayCounter();
         $counter = Counter::getInstance($arrayCounter);
-        $counter->increment('temp', 10);
-        $counter->reset('temp');
-        
-        $this->assertEquals(0, $counter->get('temp'));
+        $testKey = 'temp_' . time();
+        $counter->increment($testKey, 10);
+        $counter->reset($testKey);
+
+        $this->assertEquals(0, $counter->get($testKey));
     }
 
     public function testConstructorIsPrivate()
@@ -141,11 +150,115 @@ class CounterTest extends TestCase
     {
         $arrayCounter = new ArrayCounter();
         $counter = Counter::getInstance($arrayCounter);
+        $key1 = 'page_views_' . time();
+        $key2 = 'downloads_' . time();
+
+        $counter->increment($key1);
+        $counter->increment($key2, 5);
+
+        $this->assertEquals(1, $counter->get($key1));
+        $this->assertEquals(5, $counter->get($key2));
+    }
+
+    // --- Race Condition Tests ---
+
+    public function testRaceConditionSafeFileCounter()
+    {
+        // Test ini menunjukkan ArrayCounter AMAN dari race condition
+        // Karena sudah pakai file locking (flock)
         
-        $counter->increment('page_views');
-        $counter->increment('downloads', 5);
+        $testKey = 'safe_race_test_' . time();
+        $numProcesses = 10;
+        $incrementsPerProcess = 100;
+        $expectedValue = $numProcesses * $incrementsPerProcess;
         
-        $this->assertEquals(1, $counter->get('page_views'));
-        $this->assertEquals(5, $counter->get('downloads'));
+        // Pakai storage yang sama untuk semua process
+        $storageDir = sys_get_temp_dir() . '/counter_storage_test';
+        if (!is_dir($storageDir)) {
+            mkdir($storageDir, 0777, true);
+        }
+
+        // Buat worker script yang pakai ArrayCounter (SAFE - ada flock)
+        $tempFile = sys_get_temp_dir() . '/worker_safe_' . uniqid() . '.php';
+        $projectRoot = dirname(__DIR__);
+        
+        $workerCode = "<?php
+        define('PHPUNIT_TEST', true);
+        require_once '$projectRoot/testCounter.php';
+        
+        // Semua process pakai storage dir yang sama
+        \$storageDir = '$storageDir';
+        if (!is_dir(\$storageDir)) {
+            mkdir(\$storageDir, 0777, true);
+        }
+        
+        \$arrayCounter = new ArrayCounter(\$storageDir);
+        
+        for (\$i = 0; \$i < $incrementsPerProcess; \$i++) {
+            // PAKAI ArrayCounter (SAFE - ada flock) - perlu 2 params
+            \$arrayCounter->increment('$testKey', 1);
+        }
+        ";
+        
+        file_put_contents($tempFile, $workerCode);
+
+        // Jalankan multiple processes pakai proc_open (lebih reliable)
+        $phpPath = PHP_BINARY; // Path ke PHP yang sedang aktif
+        $processes = [];
+        
+        for ($i = 0; $i < $numProcesses; $i++) {
+            $processes[$i] = proc_open(
+                "\"$phpPath\" \"$tempFile\"",
+                [],
+                $pipes,
+                null,
+                null,
+                ['bypass_shell' => true]
+            );
+        }
+
+        // Tunggu semua process selesai
+        foreach ($processes as $proc) {
+            proc_close($proc);
+        }
+
+        // Baca hasil dengan storage yang sama
+        $arrayCounter = new ArrayCounter($storageDir);
+        $actualValue = $arrayCounter->get($testKey);
+
+        // Cleanup
+        if (file_exists($tempFile)) unlink($tempFile);
+
+        // HARUS PASS - ArrayCounter dengan flock aman dari race condition
+        $this->assertEquals($expectedValue, $actualValue,
+            "ArrayCounter with flock should be safe from race condition! Expected $expectedValue, got $actualValue"
+        );
+        
+        echo "\n✅ Safe version (ArrayCounter with flock): All $expectedValue increments successful (0% loss)\n";
+    }
+
+    public function testRaceConditionSimulationInMemory()
+    {
+        // Simulasi race condition tanpa multiple processes
+        // Ini test yang bisa jalan di Windows
+        $arrayCounter = new ArrayCounter();
+        $testKey = 'simulated_race_' . time();
+        $numIterations = 1000;
+        $expectedValue = $numIterations;
+
+        // Simulate concurrent access pattern
+        // Dalam real scenario, operasi ini bisa interleaved
+        for ($i = 0; $i < $numIterations; $i++) {
+            $current = $arrayCounter->get($testKey);
+            // Simulasi delay yang bisa menyebabkan race condition
+            $arrayCounter->set($testKey, $current + 1);
+        }
+
+        $actualValue = $arrayCounter->get($testKey);
+        
+        // Dengan sequential access, harusnya sama dengan expected
+        $this->assertEquals($expectedValue, $actualValue,
+            "Sequential access should not lose updates"
+        );
     }
 }

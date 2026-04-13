@@ -10,38 +10,107 @@ interface CounterInterface
     public function reset(string $key): void;
 }
 
-// Implementasi pake array (in-memory)
+// Implementasi pake file dengan locking (SAFE dari race condition)
 class ArrayCounter implements CounterInterface
 {
-    private array $data = [];
+    private string $storageDir;
+    private array $locks = [];
+
+    public function __construct(?string $storageDir = null)
+    {
+        $this->storageDir = $storageDir ?? sys_get_temp_dir() . '/counter_storage';
+        if (!is_dir($this->storageDir)) {
+            mkdir($this->storageDir, 0777, true);
+        }
+    }
+
+    private function getFilePath(string $key): string
+    {
+        return $this->storageDir . '/' . md5($key) . '.txt';
+    }
+
+    private function acquireLock(string $key): void
+    {
+        $lockFile = $this->getFilePath($key) . '.lock';
+        
+        // Pastikan file lock ada
+        if (!file_exists($lockFile)) {
+            file_put_contents($lockFile, '');
+        }
+        
+        $fp = fopen($lockFile, 'r+');
+        
+        // Blocking lock - tunggu sampai dapat lock
+        flock($fp, LOCK_EX);
+        $this->locks[$key] = $fp;
+    }
+
+    private function releaseLock(string $key): void
+    {
+        if (isset($this->locks[$key])) {
+            flock($this->locks[$key], LOCK_UN);
+            fclose($this->locks[$key]);
+            unset($this->locks[$key]);
+        }
+    }
 
     public function get(string $key): int
     {
-        return $this->data[$key] ?? 0;
+        $file = $this->getFilePath($key);
+        if (!file_exists($file)) {
+            return 0;
+        }
+        
+        $content = file_get_contents($file);
+        return $content === '' || $content === false ? 0 : (int)$content;
     }
 
     public function set(string $key, int $value): void
     {
-        $this->data[$key] = $value;
+        file_put_contents($this->getFilePath($key), (string)$value, LOCK_EX);
     }
 
     public function increment(string $key, int $step): int
     {
-        $value = $this->get($key) + $step;
-        $this->set($key, $value);
-        return $value;
+        // ACQUIRE LOCK - ini yang bikin aman dari race condition
+        $this->acquireLock($key);
+        
+        try {
+            // READ (aman karena udah di-lock)
+            $value = $this->get($key) + $step;
+            
+            // WRITE (aman karena masih di-lock)
+            $this->set($key, $value);
+            
+            return $value;
+        } finally {
+            // RELEASE LOCK - selalu dilepas walaupun ada error
+            $this->releaseLock($key);
+        }
     }
 
     public function decrement(string $key, int $step): int
     {
-        $value = $this->get($key) - $step;
-        $this->set($key, $value);
-        return $value;
+        $this->acquireLock($key);
+        
+        try {
+            $value = $this->get($key) - $step;
+            $this->set($key, $value);
+            return $value;
+        } finally {
+            $this->releaseLock($key);
+        }
     }
 
     public function reset(string $key): void
     {
-        $this->set($key, 0);
+        $this->acquireLock($key);
+        
+        try {
+            $this->set($key, 0);
+        } finally {
+            $this->releaseLock($key);
+        }
     }
 }
 
@@ -92,16 +161,18 @@ class Counter
 // ============================================
 // EKSEKUSI
 // ============================================
-echo "=== Counter Demo (Singleton + DI) ===\n";
-$arrayCounter = new ArrayCounter();
-$counter = Counter::getInstance($arrayCounter);
+if (!defined('PHPUNIT_TEST')) {
+    echo "=== Counter Demo (Singleton + DI) ===\n";
+    $arrayCounter = new ArrayCounter();
+    $counter = Counter::getInstance($arrayCounter);
 
-$counter2 = Counter::getInstance($arrayCounter); // Instance sama
+    $counter2 = Counter::getInstance($arrayCounter); // Instance sama
 
-echo "Counter: " . $counter->get() . "\n";
-echo "Increment: " . $counter->increment() . "\n";
-echo "Increment: " . $counter2->increment() . "\n";
-echo "Increment: " . $counter->increment() . "\n";
-echo "Decrement: " . $counter->decrement() . "\n";
-echo "Current: " . $counter->get() . "\n";
-echo "Current (counter2): " . $counter2->get() . "\n";
+    echo "Counter: " . $counter->get() . "\n";
+    echo "Increment: " . $counter->increment() . "\n";
+    echo "Increment: " . $counter2->increment() . "\n";
+    echo "Increment: " . $counter->increment() . "\n";
+    echo "Decrement: " . $counter->decrement() . "\n";
+    echo "Current: " . $counter->get() . "\n";
+    echo "Current (counter2): " . $counter2->get() . "\n";
+}
